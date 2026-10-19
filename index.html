@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kamera Çevirmeni</title>
+  <link rel="manifest" href="manifest.json">
+  <style>
+    body { font-family: system-ui; background:#0f172a; color:#f1f5f9; padding:16px; max-width:600px; margin:0 auto; }
+    video, img { width:100%; border-radius:8px; background:#000; }
+    button { padding:12px; border-radius:8px; border:none; font-size:1rem; width:100%; margin-top:8px; }
+    .primary { background:#3b82f6; color:#fff; }
+    .accent { background:#10b981; color:#fff; }
+    .result { background:#1e293b; padding:12px; border-radius:8px; margin-top:12px; white-space:pre-wrap; }
+    .error { background:#7f1d1d; padding:12px; border-radius:8px; margin-top:8px; }
+  </style>
+</head>
+<body>
+  <h2>Kamera Çevirmeni</h2>
+
+  <label>Hedef Dil:</label>
+  <select id="targetLang" style="width:100%;padding:10px;margin:8px 0;border-radius:8px;">
+    <option value="tr">Türkçe</option>
+    <option value="en" selected>İngilizce</option>
+    <option value="de">Almanca</option>
+    <option value="fr">Fransızca</option>
+    <option value="es">İspanyolca</option>
+    <option value="ar">Arapça</option>
+    <option value="ru">Rusça</option>
+  </select>
+
+  <video id="video" autoplay playsinline muted></video>
+  <button id="startCam" class="primary">Kamerayı Aç</button>
+  <button id="capture" class="accent" disabled>📷 Yakala ve Çevir</button>
+
+  <hr style="margin:16px 0;border-color:#334155;">
+
+  <input type="file" id="fileInput" accept="image/*" style="display:none">
+  <button id="pickBtn" class="primary">Galeriden Görsel Seç</button>
+  <img id="preview" style="margin-top:8px;display:none;">
+
+  <textarea id="manualText" rows="3" placeholder="Veya buraya metin yazın..."
+    style="width:100%;margin-top:12px;padding:10px;border-radius:8px;background:#1e293b;color:#fff;border:1px solid #334155;"></textarea>
+  <button id="manualBtn" class="primary">Metni Çevir</button>
+
+  <div id="result" class="result" style="display:none;"></div>
+  <div id="error" class="error" style="display:none;"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <script>
+    // ==== Tesseract Worker — v5 standart kullanım ====
+    let worker = null;
+    async function getWorker() {
+      if (worker) return worker;
+      // v5'te createWorker doğrudan dil kodunu alır; başlangıçta sadece eng yükleyin, doğrulayın
+      worker = await Tesseract.createWorker('eng', 1, {
+        logger: m => console.log(m.status, m.progress)
+      });
+      return worker;
+    }
+
+    // ==== Metin tanıma ====
+    async function recognize(source) {
+      const w = await getWorker();
+      const { data } = await w.recognize(source);
+      const text = (data.text || '').trim();
+      if (!text) throw new Error('Görselde metin bulunamadı');
+      return text;
+    }
+
+    // ==== Çeviri — MyMemory ====
+    async function translate(text, target) {
+      // MyMemory tek istekte en fazla 500 bayt; kısa tutun
+      const q = encodeURIComponent(text.slice(0, 400));
+      const url = `https://api.mymemory.translated.net/get?q=${q}&langpair=auto|${target}`;
+      const res = await fetch(url);
+      const json = await res.json();
+      const out = json?.responseData?.translatedText;
+      if (!out || /MYMEMORY WARNING|INVALID/i.test(out)) {
+        throw new Error('Çeviri başarısız: ' + (json?.responseDetails || 'bilinmeyen hata'));
+      }
+      return out;
+    }
+
+    // ==== Akış ====
+    async function processImage(source) {
+      showError('');
+      showResult('İşleniyor...');
+      try {
+        const text = await recognize(source);
+        showResult(`Okunan: ${text}\n\nÇevriliyor...`);
+        const translated = await translate(text, document.getElementById('targetLang').value);
+        showResult(`Okunan:\n${text}\n\nÇeviri:\n${translated}`);
+      } catch (e) {
+        showError(e.message);
+        showResult('');
+      }
+    }
+
+    function showResult(t) {
+      const el = document.getElementById('result');
+      el.textContent = t; el.style.display = t ? 'block' : 'none';
+    }
+    function showError(t) {
+      const el = document.getElementById('error');
+      el.textContent = t; el.style.display = t ? 'block' : 'none';
+    }
+
+    // ==== Kamera ====
+    let stream = null;
+    const video = document.getElementById('video');
+    document.getElementById('startCam').onclick = async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        video.srcObject = stream;
+        document.getElementById('capture').disabled = false;
+      } catch (e) {
+        showError('Kamera açılamadı: ' + e.message);
+      }
+    };
+
+    document.getElementById('capture').onclick = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext('2d').drawImage(video, 0, 0);
+      processImage(canvas);
+    };
+
+    // ==== Galeri ====
+    document.getElementById('pickBtn').onclick = () => document.getElementById('fileInput').click();
+    document.getElementById('fileInput').onchange = (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const img = document.getElementById('preview');
+      img.src = URL.createObjectURL(file);
+      img.style.display = 'block';
+      processImage(file);
+    };
+
+    // ==== Manuel ====
+    document.getElementById('manualBtn').onclick = async () => {
+      const text = document.getElementById('manualText').value.trim();
+      if (!text) return showError('Metin girin');
+      showResult('Çevriliyor...');
+      try {
+        const t = await translate(text, document.getElementById('targetLang').value);
+        showResult(`Orijinal:\n${text}\n\nÇeviri:\n${t}`);
+      } catch (e) { showError(e.message); }
+    };
+  </script>
+</body>
+</html>
